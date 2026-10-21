@@ -1,0 +1,3 @@
+add: add two numbers and return the result.
+save_message: save_message prepares a message for storage.
+pending_feature: pending_feature is implemented in stubs.py.
