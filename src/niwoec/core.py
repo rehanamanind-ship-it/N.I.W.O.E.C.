@@ -24,6 +24,18 @@ class Config:
     max_function_lines: int = 40
 
 
+_NETWORK_CALLS = {
+    "get",
+    "post",
+    "put",
+    "patch",
+    "delete",
+    "request",
+    "urlopen",
+    "fetch",
+}
+
+
 @dataclass(frozen=True)
 class Finding:
     """A deterministic source-code finding."""
@@ -98,7 +110,44 @@ def _files(path: Path) -> list[Path]:
     return sorted(path.rglob("*.py")) if path.is_dir() else [path]
 
 
-def _stub(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+def _is_group_decorator(decorator: ast.expr) -> bool:
+    """Return whether a decorator is a qualified group registration."""
+    expression = decorator.func if isinstance(decorator, ast.Call) else decorator
+    return isinstance(expression, ast.Attribute) and expression.attr == "group"
+
+
+def _has_child_command(tree: ast.Module, group_name: str) -> bool:
+    """Check whether a group callback has statically registered child commands."""
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for decorator in node.decorator_list:
+            expression = decorator.func if isinstance(decorator, ast.Call) else decorator
+            if (
+                isinstance(expression, ast.Attribute)
+                and isinstance(expression.value, ast.Name)
+                and expression.value.id == group_name
+                and expression.attr in {"command", "group"}
+            ):
+                return True
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == group_name
+            and node.func.attr == "add_command"
+        ):
+            return True
+    return False
+
+
+def _stub(node: ast.FunctionDef | ast.AsyncFunctionDef, tree: ast.Module) -> bool:
+    """Return whether a function is an unfinished non-registration callback."""
+    if any(
+        _is_group_decorator(decorator) for decorator in node.decorator_list
+    ) and _has_child_command(tree, node.name):
+        return False
     body = [
         item
         for item in node.body
@@ -121,8 +170,9 @@ def scan(path: Path) -> ScanReport:
     """Find empty and placeholder functions."""
     findings: list[Finding] = []
     for file in _files(path):
-        for node in ast.walk(parse(file)):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _stub(node):
+        tree = parse(file)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _stub(node, tree):
                 findings.append(
                     Finding(
                         stable_id("stub-function", "python", node),
@@ -175,10 +225,11 @@ def verify(spec: Path, tests: Path) -> VerifyReport:
 
 
 def review(path: Path, config: Config) -> ReviewReport:
-    """Find functions exceeding the configured line limit."""
+    """Find long functions and declared online dependencies."""
     findings: list[Finding] = []
     for file in _files(path):
-        for node in ast.walk(parse(file)):
+        tree = parse(file)
+        for node in ast.walk(tree):
             if (
                 isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                 and node.end_lineno
@@ -194,9 +245,41 @@ def review(path: Path, config: Config) -> ReviewReport:
                         node.lineno,
                     )
                 )
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                if re.search(r"https?://[^\s\"']+", node.value):
+                    findings.append(
+                        Finding(
+                            stable_id("external-url", "python", node),
+                            "external-url",
+                            "low",
+                            "External URL requires an offline contract or integration test",
+                            str(file),
+                            node.lineno,
+                        )
+                    )
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in _NETWORK_CALLS
+            ):
+                findings.append(
+                    Finding(
+                        stable_id("network-call", "python", node),
+                        "network-call",
+                        "low",
+                        "Network/API call detected; validate it with an offline contract or integration test",
+                        str(file),
+                        node.lineno,
+                    )
+                )
     return ReviewReport(
         tuple(sorted(findings, key=lambda item: (item.file, item.line, item.finding_id)))
     )
+
+
+def online(path: Path) -> ReviewReport:
+    """Report URLs and network/API calls without contacting the network."""
+    return review(path, Config(max_function_lines=2**31 - 1))
 
 
 def fuse(mapped: MapReport, scanned: ScanReport, verified: VerifyReport) -> VerdictReport:

@@ -18,7 +18,7 @@ def test_version_command() -> None:
         [sys.executable, "-m", "niwoec.cli", "--version"], capture_output=True, text=True
     )
     assert result.returncode == 0
-    assert result.stdout.strip() == "1.0.0"
+    assert result.stdout.strip() == "2.1.0"
 
 
 def test_cli_commands(tmp_path: Path, capsys: object) -> None:

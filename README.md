@@ -17,7 +17,7 @@ niwoec is designed for local and air-gapped use:
 ### Install from a wheel
 
 ```bash
-python -m pip install dist/niwoec-1.0.0-py3-none-any.whl
+python -m pip install dist/niwoec-2.1.0-py3-none-any.whl
 ```
 
 ### Install from the source tree
@@ -50,6 +50,7 @@ niwoec scan src/
 niwoec map requirements.frs src/
 niwoec verify requirements.frs tests/
 niwoec review src/
+niwoec online src/
 ```
 
 Use JSON when another tool needs to consume the result:
@@ -118,11 +119,17 @@ a behavioral test.
 | `map SPEC SOURCE` | Link FRS requirements to source files. |
 | `verify SPEC TESTS` | Find requirements referenced by tests. |
 | `review SOURCE` | Report functions over the configured line threshold. |
+| `online SOURCE` | Detect URLs and network/API calls without making network requests. |
 | `check SPEC SOURCE` | Combine mapping, scanning, and verification into verdicts. |
 | `stubs SOURCE` | Run the scan layer for placeholder findings. |
 
 `SOURCE` and `TESTS` may be a Python file or a directory. Directory traversal
 is deterministic and considers Python files in sorted order.
+
+The `online` command is intentionally offline. It identifies external URLs and
+common HTTP/API calls so they can be covered by an integration test or an
+offline endpoint contract. It never probes an endpoint, downloads data, or
+changes the result based on internet availability.
 
 ## Output formats
 

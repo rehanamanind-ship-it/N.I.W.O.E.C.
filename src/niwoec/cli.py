@@ -14,6 +14,7 @@ from niwoec.core import (
     map_requirements,
     render,
     review,
+    online,
     scan,
     verify,
 )
@@ -26,7 +27,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--version", action="version", version=__version__)
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("scan", "review", "stubs"):
+    for name in ("scan", "review", "online", "stubs"):
         command = sub.add_parser(name)
         command.add_argument("source", type=Path)
         command.add_argument(
@@ -55,6 +56,8 @@ def main(argv: list[str] | None = None) -> int:
             report = scan(args.source)
         elif args.command == "review":
             report = review(args.source, Config())
+        elif args.command == "online":
+            report = online(args.source)
         elif args.command == "map":
             report = map_requirements(args.spec, args.source)
         elif args.command == "verify":
