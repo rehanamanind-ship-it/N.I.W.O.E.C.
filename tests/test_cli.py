@@ -18,7 +18,7 @@ def test_version_command() -> None:
         [sys.executable, "-m", "niwoec.cli", "--version"], capture_output=True, text=True
     )
     assert result.returncode == 0
-    assert result.stdout.strip() == "2.1.0"
+    assert result.stdout.strip() == "2.2.0"
 
 
 def test_cli_commands(tmp_path: Path, capsys: object) -> None:
@@ -37,3 +37,11 @@ def test_cli_commands(tmp_path: Path, capsys: object) -> None:
     assert main(["help"]) == 0
     assert main(["scan", str(tmp_path / "missing.py")]) == 2
     assert capsys.readouterr().out
+
+
+def test_cli_online_and_coverage_errors(tmp_path: Path, capsys: object) -> None:
+    source = tmp_path / "client.py"
+    source.write_text('value = "https://example.test"\n', encoding="utf-8")
+    assert main(["online", str(source)]) == 0
+    assert main(["check", str(tmp_path / "spec.frs"), str(source), "--min-coverage", "101"]) == 2
+    assert "between 0 and 100" in capsys.readouterr().err

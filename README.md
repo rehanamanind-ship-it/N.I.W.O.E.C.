@@ -17,7 +17,7 @@ niwoec is designed for local and air-gapped use:
 ### Install from a wheel
 
 ```bash
-python -m pip install dist/niwoec-2.1.0-py3-none-any.whl
+python -m pip install dist/niwoec-2.2.0-py3-none-any.whl
 ```
 
 ### Install from the source tree
@@ -57,6 +57,12 @@ Use JSON when another tool needs to consume the result:
 
 ```bash
 niwoec check requirements.frs src/ --tests tests/ --format json
+```
+
+For CI-friendly Markdown output:
+
+```bash
+niwoec check requirements.frs src/ --tests tests/ --format markdown
 ```
 
 The available commands and options are also listed by:
@@ -130,6 +136,38 @@ The `online` command is intentionally offline. It identifies external URLs and
 common HTTP/API calls so they can be covered by an integration test or an
 offline endpoint contract. It never probes an endpoint, downloads data, or
 changes the result based on internet availability.
+
+`check` reports mapping and test coverage independently. A requirement can be
+mapped but untested, which produces guidance such as:
+
+```text
+Missing behavioral test reference: load_model; Suggested test name: test_load_model_...
+```
+
+Use `--untested info`, `--untested warning`, or `--untested failure` to label
+untested requirements for a project's policy. Use `--min-coverage 100` with a
+Cobertura XML report (default `coverage.xml`) to enforce a coverage threshold:
+
+```bash
+niwoec check requirements.frs src --tests tests \
+  --min-coverage 100 --coverage-file coverage.xml
+```
+
+The report is read locally by niwoec; it never runs tests or accesses the
+network.
+
+## GitHub Actions
+
+The command is suitable for an offline or controlled CI job:
+
+```yaml
+- run: python -m pip install -e '.[dev]'
+- run: niwoec check requirements.frs src --tests tests --format sarif > niwoec.sarif
+- uses: actions/upload-artifact@v4
+  with:
+    name: niwoec-report
+    path: niwoec.sarif
+```
 
 ## Output formats
 

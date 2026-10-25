@@ -1,0 +1,65 @@
+NIWOEC Improvement Recommendations
+===================================
+
+Priority 1: Separate mapping from verification
+----------------------------------------------
+Show these states independently:
+
+- Mapped: the requirement is linked to one or more source files.
+- Tested: a behavioral test references the requirement.
+- Satisfied: the source mapping and behavioral verification both pass.
+
+This prevents users from confusing an untested requirement with a missing implementation.
+
+Priority 2: Improve the default report
+--------------------------------------
+Replace the Python-style dictionary output with a readable table and summary, for example:
+
+10 mapped | 10 tested | 10 satisfied | 0 findings
+
+Each requirement should show its mapping, test coverage, verdict, and findings.
+
+Priority 3: Give test guidance
+------------------------------
+When a requirement is mapped but untested, report a clear action:
+
+Missing behavioral test reference: load_model
+Suggested test name: test_load_model_...
+
+Priority 4: Improve requirement detection
+------------------------------------------
+Detect requirement IDs in:
+
+- test function names
+- test docstrings
+- explicit decorators or markers
+- test metadata
+
+This is more flexible than relying only on plain identifier text matching.
+
+Priority 5: Add configurable severity
+-------------------------------------
+Allow projects to choose whether untested requirements are warnings, failures, or informational results.
+
+Priority 6: Add coverage thresholds
+-----------------------------------
+Support a command option such as:
+
+niwoec check requirements.frs src --tests tests --min-coverage 100
+
+Priority 7: Improve CI integration
+----------------------------------
+Provide GitHub Actions documentation and publish Markdown and SARIF summaries as CI artifacts or pull-request results.
+
+Priority 8: Preserve deterministic behavior
+-------------------------------------------
+Keep the current offline, deterministic design. Any new reporting or test-discovery feature should produce stable output for the same source, FRS, configuration, and rule version.
+
+Recommended first implementation
+--------------------------------
+Implement the status separation first. It provides the biggest usability improvement without changing the core analysis engine:
+
+MAPPED       TESTED       SATISFIED
+Yes          Yes          Yes
+Yes          No           No
+No           No           No

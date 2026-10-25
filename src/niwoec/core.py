@@ -4,6 +4,7 @@ import ast
 import hashlib
 import json
 import re
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -17,11 +18,25 @@ class InputError(NiwoecError):
     """Invalid or unreadable input."""
 
 
+def enforce_coverage(minimum: float, report_path: Path = Path("coverage.xml")) -> None:
+    """Require a Cobertura XML report to meet the requested line coverage."""
+    if not report_path.is_file():
+        raise InputError(f"coverage report not found: {report_path}")
+    try:
+        root = ET.parse(report_path).getroot()
+        covered = float(root.attrib["line-rate"]) * 100
+    except (ET.ParseError, KeyError, TypeError, ValueError) as exc:
+        raise InputError(f"invalid coverage report: {report_path}") from exc
+    if covered < minimum:
+        raise InputError(f"coverage {covered:.2f}% is below required {minimum:.2f}%")
+
+
 @dataclass(frozen=True)
 class Config:
     """Runtime thresholds."""
 
     max_function_lines: int = 40
+    untested_severity: str = "warning"
 
 
 _NETWORK_CALLS = {
@@ -60,6 +75,7 @@ class MapReport:
     """Requirement-to-file links."""
 
     links: tuple[tuple[str, str], ...]
+    requirements: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -81,7 +97,11 @@ class Verdict:
     """One requirement's result."""
 
     requirement_id: str
+    mapped: bool
+    tested: bool
     satisfied: bool
+    severity: str
+    guidance: str
     findings: tuple[str, ...]
 
 
@@ -120,6 +140,8 @@ def _has_child_command(tree: ast.Module, group_name: str) -> bool:
     """Check whether a group callback has statically registered child commands."""
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name == group_name:
             continue
         for decorator in node.decorator_list:
             expression = decorator.func if isinstance(decorator, ast.Call) else decorator
@@ -163,7 +185,15 @@ def _stub(node: ast.FunctionDef | ast.AsyncFunctionDef, tree: ast.Module) -> boo
         return (
             isinstance(body[0].exc.func, ast.Name) and body[0].exc.func.id == "NotImplementedError"
         )
-    return len(body) == 1 and isinstance(body[0], ast.Return) and body[0].value is None
+    return (
+        len(body) == 1
+        and isinstance(body[0], ast.Return)
+        and (
+            body[0].value is None
+            or isinstance(body[0].value, ast.Constant)
+            and body[0].value.value is None
+        )
+    )
 
 
 def scan(path: Path) -> ScanReport:
@@ -207,21 +237,47 @@ def map_requirements(spec: Path, source: Path) -> MapReport:
             for file, content in candidates:
                 if identifier_matches or any(token in content for token in tokens):
                     links.append((match[1], str(file)))
-    return MapReport(tuple(sorted(set(links))))
+    requirement_ids = tuple(
+        match.group(1)
+        for line in lines
+        if (match := re.match(r"^\s*([A-Za-z0-9_.-]+)\s*:\s*(.+)$", line))
+    )
+    return MapReport(tuple(sorted(set(links))), requirement_ids)
 
 
 def verify(spec: Path, tests: Path) -> VerifyReport:
-    """Mark requirements referenced in test files."""
+    """Find requirement references in test names, docs, decorators, and markers."""
     try:
         requirements = [
             line.split(":", 1)[0].strip()
             for line in spec.read_text(encoding="utf-8").splitlines()
             if ":" in line
         ]
-        content = "\n".join(file.read_text(encoding="utf-8") for file in _files(tests))
+        pinned: set[str] = set()
+        for file in _files(tests):
+            content = file.read_text(encoding="utf-8")
+            tree = ast.parse(content, filename=str(file))
+            for requirement in requirements:
+                if re.search(rf"\btest_{re.escape(requirement)}\b", content):
+                    pinned.add(requirement)
+                if re.search(rf"#\s*{re.escape(requirement)}\b", content):
+                    pinned.add(requirement)
+                if re.search(
+                    rf"(?:requirement|frs)\s*[:=(]\s*[\"']{re.escape(requirement)}", content, re.I
+                ):
+                    pinned.add(requirement)
+                for node in ast.walk(tree):
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        docstring = ast.get_docstring(node) or ""
+                        if requirement in node.name or requirement in docstring:
+                            pinned.add(requirement)
+                        if any(
+                            requirement in ast.dump(decorator) for decorator in node.decorator_list
+                        ):
+                            pinned.add(requirement)
     except (OSError, UnicodeError) as exc:
         raise InputError(f"cannot read verification input: {exc}") from exc
-    return VerifyReport(tuple(item for item in requirements if item in content))
+    return VerifyReport(tuple(item for item in requirements if item in pinned))
 
 
 def review(path: Path, config: Config) -> ReviewReport:
@@ -282,17 +338,37 @@ def online(path: Path) -> ReviewReport:
     return review(path, Config(max_function_lines=2**31 - 1))
 
 
-def fuse(mapped: MapReport, scanned: ScanReport, verified: VerifyReport) -> VerdictReport:
-    """Combine reports without reading files."""
-    requirements = sorted({item for item, _ in mapped.links} | set(verified.pinned))
+def fuse(
+    mapped: MapReport,
+    scanned: ScanReport,
+    verified: VerifyReport,
+    config: Config | None = None,
+) -> VerdictReport:
+    """Combine reports into independent mapping, testing, and satisfaction states."""
+    settings = config or Config()
+    requirements = sorted(
+        set(mapped.requirements) | {item for item, _ in mapped.links} | set(verified.pinned)
+    )
     verdicts = []
     for requirement in requirements:
         files = {file for item, file in mapped.links if item == requirement}
         findings = tuple(item.finding_id for item in scanned.findings if item.file in files)
+        mapped_state = bool(files)
+        tested_state = requirement in verified.pinned
+        guidance = (
+            ""
+            if tested_state
+            else f"Missing behavioral test reference: {requirement}; "
+            f"Suggested test name: test_{requirement}_..."
+        )
         verdicts.append(
             Verdict(
                 requirement,
-                bool(files and requirement in verified.pinned and not findings),
+                mapped_state,
+                tested_state,
+                bool(mapped_state and tested_state and not findings),
+                "" if tested_state else settings.untested_severity,
+                guidance,
                 findings,
             )
         )
@@ -308,7 +384,18 @@ def report_data(report: Any) -> dict[str, Any]:
     if isinstance(report, VerifyReport):
         return {"pinned": list(report.pinned)}
     if isinstance(report, VerdictReport):
-        return {"verdicts": [item.__dict__ for item in report.verdicts]}
+        mapped = sum(item.mapped for item in report.verdicts)
+        tested = sum(item.tested for item in report.verdicts)
+        satisfied = sum(item.satisfied for item in report.verdicts)
+        return {
+            "summary": {
+                "mapped": mapped,
+                "tested": tested,
+                "satisfied": satisfied,
+                "findings": sum(bool(item.findings) for item in report.verdicts),
+            },
+            "verdicts": [item.__dict__ for item in report.verdicts],
+        }
     raise TypeError(f"unsupported report {type(report).__name__}")
 
 
@@ -318,6 +405,22 @@ def render(report: Any, output_format: str) -> str:
     if output_format == "json":
         return json.dumps(data, indent=2, sort_keys=True) + "\n"
     if output_format == "markdown":
+        if isinstance(report, VerdictReport):
+            data = report_data(report)
+            lines = [
+                "| Requirement | Mapped | Tested | Satisfied | Findings |",
+                "| --- | --- | --- | --- | --- |",
+            ]
+            lines.extend(
+                f"| {item.requirement_id} | {'Yes' if item.mapped else 'No'} | "
+                f"{'Yes' if item.tested else 'No'} | {'Yes' if item.satisfied else 'No'} | "
+                f"{len(item.findings)} |"
+                for item in report.verdicts
+            )
+            guidance = [item.guidance for item in report.verdicts if item.guidance]
+            if guidance:
+                lines.extend(["", *guidance])
+            return "\n".join(lines) + "\n"
         return "\n".join(f"- **{key}**: {value}" for key, value in data.items()) + "\n"
     if output_format == "sarif":
         return (
@@ -336,4 +439,23 @@ def render(report: Any, output_format: str) -> str:
             )
             + "\n"
         )
+    if isinstance(report, VerdictReport):
+        summary = data["summary"]
+        lines = [
+            f"{summary['mapped']} mapped | {summary['tested']} tested | "
+            f"{summary['satisfied']} satisfied | {summary['findings']} findings",
+            "",
+            "Requirement | Mapped | Tested | Satisfied | Findings",
+            "------------|--------|---------|-----------|---------",
+        ]
+        lines.extend(
+            f"{item.requirement_id} | {'Yes' if item.mapped else 'No'} | "
+            f"{'Yes' if item.tested else 'No'} | {'Yes' if item.satisfied else 'No'} | "
+            f"{len(item.findings)}"
+            for item in report.verdicts
+        )
+        guidance = [item.guidance for item in report.verdicts if item.guidance]
+        if guidance:
+            lines.extend(["", *guidance])
+        return "\n".join(lines) + "\n"
     return "\n".join(f"{key}: {value}" for key, value in data.items()) + "\n"

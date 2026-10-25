@@ -10,6 +10,7 @@ from niwoec.core import (
     Config,
     NiwoecError,
     ScanReport,
+    enforce_coverage,
     fuse,
     map_requirements,
     render,
@@ -44,6 +45,14 @@ def main(argv: list[str] | None = None) -> int:
     command.add_argument("spec", type=Path)
     command.add_argument("source", type=Path)
     command.add_argument("--tests", type=Path, default=Path("tests"))
+    command.add_argument(
+        "--untested",
+        choices=("info", "warning", "failure"),
+        default="warning",
+        help="severity assigned to requirements without behavioral tests",
+    )
+    command.add_argument("--min-coverage", type=float, default=None)
+    command.add_argument("--coverage-file", type=Path, default=Path("coverage.xml"))
     command.add_argument("--format", choices=("text", "json", "sarif", "markdown"), default="text")
     sub.add_parser("help")
     try:
@@ -63,10 +72,15 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "verify":
             report = verify(args.spec, args.source)
         else:
+            if args.min_coverage is not None and not 0 <= args.min_coverage <= 100:
+                raise NiwoecError("--min-coverage must be between 0 and 100")
+            if args.min_coverage is not None:
+                enforce_coverage(args.min_coverage, args.coverage_file)
             report = fuse(
                 map_requirements(args.spec, args.source),
                 scan(args.source),
                 verify(args.spec, args.tests),
+                Config(untested_severity=args.untested),
             )
         sys.stdout.write(render(report, args.format))
         if isinstance(report, ScanReport):

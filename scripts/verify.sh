@@ -6,6 +6,7 @@ python -m ruff check src tests
 python -m ruff format --check src tests
 python -m mypy --strict src
 python -m pytest --cov=niwoec --cov-fail-under=85
+rm -rf dist
 python -m build
 python -m venv /tmp/niwoec-verify
 /tmp/niwoec-verify/bin/pip install dist/niwoec-*.whl
