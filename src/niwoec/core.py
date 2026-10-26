@@ -4,6 +4,10 @@ import ast
 import hashlib
 import json
 import re
+import shutil
+import subprocess
+import sys
+import tempfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -100,6 +104,7 @@ class Verdict:
     mapped: bool
     tested: bool
     satisfied: bool
+    status: str
     severity: str
     guidance: str
     findings: tuple[str, ...]
@@ -110,6 +115,199 @@ class VerdictReport:
     """Combined verification result."""
 
     verdicts: tuple[Verdict, ...]
+
+
+@dataclass(frozen=True)
+class DynamicReport:
+    """Results from an explicitly requested bounded local test run."""
+
+    status: str
+    passed: int
+    failed: int
+    duration_seconds: float
+    output: str
+
+
+@dataclass(frozen=True)
+class DeepReport:
+    """Bounded dynamic and mutation evidence for trusted local projects."""
+
+    baseline: DynamicReport
+    mutants: int
+    killed: int
+    survived: int
+    timed_out: int
+
+
+def dynamic_test(
+    tests: Path,
+    project: Path,
+    timeout_seconds: int = 30,
+    max_tests: int = 1000,
+) -> DynamicReport:
+    """Run up to the configured number of local pytest tests with a timeout."""
+    if not tests.exists():
+        raise InputError(f"test path not found: {tests}")
+    try:
+        collected = subprocess.run(
+            [sys.executable, "-m", "pytest", "--collect-only", "-q", str(tests)],
+            cwd=project,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise InputError(f"test collection timed out after {timeout_seconds} seconds") from exc
+    if collected.returncode != 0:
+        raise InputError(f"test collection failed: {collected.stderr.strip()}")
+    test_lines = [line for line in collected.stdout.splitlines() if "::" in line]
+    if len(test_lines) > max_tests:
+        raise InputError(f"test count {len(test_lines)} exceeds limit {max_tests}")
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", str(tests)],
+            cwd=project,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return DynamicReport("timeout", 0, 0, float(timeout_seconds), str(exc))
+    summary = result.stdout.splitlines()[-1] if result.stdout.splitlines() else ""
+    passed_match = re.search(r"(\d+) passed", summary)
+    failed_match = re.search(r"(\d+) failed", summary)
+    passed = int(passed_match.group(1)) if passed_match else 0
+    failed = int(failed_match.group(1)) if failed_match else 0
+    return DynamicReport(
+        "passed" if result.returncode == 0 else "failed",
+        passed,
+        failed,
+        0.0,
+        (result.stdout + result.stderr).strip(),
+    )
+
+
+class _Mutation(ast.NodeTransformer):
+    """Apply one deterministic mutation to an eligible AST node."""
+
+    def __init__(self, target: int) -> None:
+        self.target = target
+        self.index = 0
+        self.changed = False
+
+    def _eligible(self, node: ast.AST) -> bool:
+        if self.changed:
+            return False
+        eligible = isinstance(node, (ast.BinOp, ast.Compare, ast.Constant))
+        if eligible and self.index == self.target:
+            self.changed = True
+            return True
+        if eligible:
+            self.index += 1
+        return False
+
+    def visit_BinOp(self, node: ast.BinOp) -> ast.AST:
+        if self._eligible(node):
+            replacements: dict[type[ast.operator], ast.operator] = {
+                ast.Add: ast.Sub(),
+                ast.Sub: ast.Add(),
+                ast.Mult: ast.Add(),
+                ast.Div: ast.Mult(),
+            }
+            node.op = replacements.get(type(node.op), ast.Sub())
+            return node
+        return self.generic_visit(node)
+
+    def visit_Compare(self, node: ast.Compare) -> ast.AST:
+        if self._eligible(node) and node.ops:
+            replacements: dict[type[ast.cmpop], ast.cmpop] = {
+                ast.Eq: ast.NotEq(),
+                ast.NotEq: ast.Eq(),
+                ast.Lt: ast.GtE(),
+                ast.Gt: ast.LtE(),
+                ast.LtE: ast.Gt(),
+                ast.GtE: ast.Lt(),
+            }
+            node.ops[0] = replacements.get(type(node.ops[0]), ast.NotEq())
+            return node
+        return self.generic_visit(node)
+
+    def visit_Constant(self, node: ast.Constant) -> ast.AST:
+        if self._eligible(node):
+            if isinstance(node.value, bool):
+                node.value = not node.value
+            elif isinstance(node.value, (int, float)):
+                node.value = 0 if node.value else 1
+            elif isinstance(node.value, str) and node.value:
+                node.value = node.value + "_mutated"
+            return node
+        return node
+
+
+def deep_test(
+    source: Path,
+    tests: Path,
+    project: Path,
+    timeout_seconds: int = 30,
+    max_mutants: int = 50,
+) -> DeepReport:
+    """Run baseline tests and a bounded deterministic mutation sample."""
+    baseline = dynamic_test(tests, project, timeout_seconds)
+    if baseline.status != "passed":
+        return DeepReport(baseline, 0, 0, 0, int(baseline.status == "timeout"))
+    files = _files(source)
+    mutants = 0
+    killed = 0
+    survived = 0
+    timed_out = 0
+    with tempfile.TemporaryDirectory(prefix="niwoec-deep-") as directory:
+        temporary_project = Path(directory) / "project"
+        shutil.copytree(
+            project,
+            temporary_project,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
+        try:
+            relative_tests = tests.resolve().relative_to(project.resolve())
+        except ValueError as exc:
+            raise InputError("tests must be inside the dynamic project") from exc
+        for file in files:
+            try:
+                relative_source = file.resolve().relative_to(project.resolve())
+            except ValueError as exc:
+                raise InputError("source must be inside the dynamic project") from exc
+            tree = parse(file)
+            for target in range(max_mutants - mutants):
+                mutation = _Mutation(target)
+                mutated = mutation.visit(ast.parse(ast.unparse(tree)))
+                if not isinstance(mutated, ast.Module) or not mutation.changed:
+                    break
+                destination = temporary_project / relative_source
+                destination.write_text(ast.unparse(mutated) + "\n", encoding="utf-8")
+                try:
+                    result = subprocess.run(
+                        [sys.executable, "-m", "pytest", "-q", str(relative_tests)],
+                        cwd=temporary_project,
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout_seconds,
+                        check=False,
+                    )
+                except subprocess.TimeoutExpired:
+                    timed_out += 1
+                else:
+                    mutants += 1
+                    if result.returncode == 0:
+                        survived += 1
+                    else:
+                        killed += 1
+                if mutants >= max_mutants:
+                    break
+            if mutants >= max_mutants:
+                break
+    return DeepReport(baseline, mutants, killed, survived, timed_out)
 
 
 def stable_id(rule_id: str, language: str, node: ast.AST) -> str:
@@ -361,12 +559,20 @@ def fuse(
             else f"Missing behavioral test reference: {requirement}; "
             f"Suggested test name: test_{requirement}_..."
         )
+        status = (
+            "failed"
+            if findings
+            else "unverified"
+            if not mapped_state or not tested_state
+            else "satisfied"
+        )
         verdicts.append(
             Verdict(
                 requirement,
                 mapped_state,
                 tested_state,
-                bool(mapped_state and tested_state and not findings),
+                status == "satisfied",
+                status,
                 "" if tested_state else settings.untested_severity,
                 guidance,
                 findings,
@@ -387,14 +593,30 @@ def report_data(report: Any) -> dict[str, Any]:
         mapped = sum(item.mapped for item in report.verdicts)
         tested = sum(item.tested for item in report.verdicts)
         satisfied = sum(item.satisfied for item in report.verdicts)
+        unverified = sum(item.status == "unverified" for item in report.verdicts)
+        failed = sum(item.status == "failed" for item in report.verdicts)
         return {
             "summary": {
                 "mapped": mapped,
                 "tested": tested,
                 "satisfied": satisfied,
+                "unverified": unverified,
+                "failed": failed,
                 "findings": sum(bool(item.findings) for item in report.verdicts),
             },
             "verdicts": [item.__dict__ for item in report.verdicts],
+        }
+    if isinstance(report, DynamicReport):
+        return {"dynamic": report.__dict__}
+    if isinstance(report, DeepReport):
+        return {
+            "deep": {
+                "baseline": report.baseline.__dict__,
+                "mutants": report.mutants,
+                "killed": report.killed,
+                "survived": report.survived,
+                "timed_out": report.timed_out,
+            }
         }
     raise TypeError(f"unsupported report {type(report).__name__}")
 
@@ -408,13 +630,13 @@ def render(report: Any, output_format: str) -> str:
         if isinstance(report, VerdictReport):
             data = report_data(report)
             lines = [
-                "| Requirement | Mapped | Tested | Satisfied | Findings |",
+                "| Requirement | Mapped | Tested | Status | Findings |",
                 "| --- | --- | --- | --- | --- |",
             ]
             lines.extend(
                 f"| {item.requirement_id} | {'Yes' if item.mapped else 'No'} | "
-                f"{'Yes' if item.tested else 'No'} | {'Yes' if item.satisfied else 'No'} | "
-                f"{len(item.findings)} |"
+                f"{'Yes' if item.tested else 'No'} | {item.status.upper()} | "
+                f"{item.status.upper()} | {len(item.findings)} |"
                 for item in report.verdicts
             )
             guidance = [item.guidance for item in report.verdicts if item.guidance]
@@ -442,20 +664,24 @@ def render(report: Any, output_format: str) -> str:
     if isinstance(report, VerdictReport):
         summary = data["summary"]
         lines = [
-            f"{summary['mapped']} mapped | {summary['tested']} tested | "
-            f"{summary['satisfied']} satisfied | {summary['findings']} findings",
+            f"📊 {summary['mapped']} mapped | {summary['tested']} tested | "
+            f"✅ {summary['satisfied']} satisfied | "
+            f"🟡 {summary['unverified']} unverified | "
+            f"❌ {summary['failed']} failed",
             "",
-            "Requirement | Mapped | Tested | Satisfied | Findings",
-            "------------|--------|---------|-----------|---------",
+            "Requirement | Mapped | Tested | Status | Findings",
+            "------------|--------|---------|--------|---------",
         ]
+        symbols = {"satisfied": "✅", "unverified": "🟡", "failed": "❌"}
         lines.extend(
             f"{item.requirement_id} | {'Yes' if item.mapped else 'No'} | "
-            f"{'Yes' if item.tested else 'No'} | {'Yes' if item.satisfied else 'No'} | "
-            f"{len(item.findings)}"
+            f"{'Yes' if item.tested else 'No'} | "
+            f"{symbols[item.status]} {item.status.upper()} | {len(item.findings)}"
             for item in report.verdicts
         )
         guidance = [item.guidance for item in report.verdicts if item.guidance]
         if guidance:
-            lines.extend(["", *guidance])
+            lines.extend(["", "Next actions:"])
+            lines.extend(f"💡 {item}" for item in guidance)
         return "\n".join(lines) + "\n"
     return "\n".join(f"{key}: {value}" for key, value in data.items()) + "\n"

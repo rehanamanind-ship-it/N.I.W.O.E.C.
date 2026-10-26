@@ -11,6 +11,8 @@ from niwoec.core import (
     NiwoecError,
     ScanReport,
     enforce_coverage,
+    dynamic_test,
+    deep_test,
     fuse,
     map_requirements,
     render,
@@ -19,6 +21,22 @@ from niwoec.core import (
     scan,
     verify,
 )
+
+
+def _confirm_dynamic_execution() -> None:
+    """Require two explicit confirmations before running project tests."""
+    prompts = (
+        "Dynamic mode will execute project test code. This may perform file, "
+        "process, or network operations. Continue? [y/N] ",
+        "Final confirmation: execute the selected tests now? [y/N] ",
+    )
+    for prompt in prompts:
+        try:
+            answer = input(prompt)
+        except EOFError as exc:
+            raise NiwoecError("dynamic execution requires two confirmations") from exc
+        if answer.strip().lower() not in {"y", "yes"}:
+            raise NiwoecError("dynamic execution cancelled")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -53,6 +71,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     command.add_argument("--min-coverage", type=float, default=None)
     command.add_argument("--coverage-file", type=Path, default=Path("coverage.xml"))
+    command.add_argument(
+        "--dynamic",
+        action="store_true",
+        help="opt in to bounded local pytest execution",
+    )
+    command.add_argument(
+        "--deep",
+        action="store_true",
+        help="run bounded tests and deterministic mutation analysis",
+    )
+    command.add_argument("--dynamic-project", type=Path, default=Path("."))
     command.add_argument("--format", choices=("text", "json", "sarif", "markdown"), default="text")
     sub.add_parser("help")
     try:
@@ -82,12 +111,30 @@ def main(argv: list[str] | None = None) -> int:
                 verify(args.spec, args.tests),
                 Config(untested_severity=args.untested),
             )
+            if args.dynamic or args.deep:
+                _confirm_dynamic_execution()
+                if args.deep:
+                    deep = deep_test(args.source, args.tests, args.dynamic_project)
+                    sys.stdout.write(render(deep, args.format))
+                    if deep.baseline.status != "passed" or deep.survived or deep.timed_out:
+                        return 1
+                else:
+                    dynamic = dynamic_test(args.tests, args.dynamic_project)
+                    sys.stdout.write(render(dynamic, args.format))
+                if args.dynamic and dynamic.status != "passed":
+                    return 1
         sys.stdout.write(render(report, args.format))
         if isinstance(report, ScanReport):
             return 1 if report.findings else 0
         return (
             1
-            if args.command == "check" and any(not item.satisfied for item in report.verdicts)
+            if args.command == "check"
+            and any(
+                item.status == "failed"
+                or item.status == "unverified"
+                and item.severity == "failure"
+                for item in report.verdicts
+            )
             else 0
         )
     except (NiwoecError, OSError) as exc:

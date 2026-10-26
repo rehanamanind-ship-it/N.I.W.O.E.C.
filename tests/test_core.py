@@ -5,6 +5,8 @@ from niwoec.core import (
     Config,
     InputError,
     enforce_coverage,
+    dynamic_test,
+    deep_test,
     fuse,
     map_requirements,
     online,
@@ -83,6 +85,7 @@ def test_verdict_separates_mapping_testing_and_satisfaction(tmp_path: Path) -> N
     load, save = report.verdicts
     assert (load.mapped, load.tested, load.satisfied) == (True, True, True)
     assert (save.mapped, save.tested, save.satisfied) == (False, False, False)
+    assert (load.status, save.status) == ("satisfied", "unverified")
     assert "Suggested test name: test_save_..." in save.guidance
 
 
@@ -216,8 +219,29 @@ def test_render_verdict_markdown_includes_guidance(tmp_path: Path) -> None:
     test_dir.mkdir()
     result = fuse(map_requirements(spec, source), scan(source), verify(spec, test_dir))
     output = render(result, "markdown")
-    assert "Requirement | Mapped | Tested | Satisfied | Findings" in output
+    assert "Requirement | Mapped | Tested | Status | Findings" in output
     assert "Suggested test name: test_save_..." in output
+
+
+def test_dynamic_test_runs_bounded_local_suite(tmp_path: Path) -> None:
+    tests = tmp_path / "test_dynamic.py"
+    tests.write_text("def test_dynamic_passes():\n    assert 2 + 2 == 4\n", encoding="utf-8")
+    report = dynamic_test(tests, tmp_path)
+    assert (report.status, report.passed, report.failed) == ("passed", 1, 0)
+
+
+def test_deep_test_kills_mutant_with_behavioral_test(tmp_path: Path) -> None:
+    source = tmp_path / "deep_subject.py"
+    source.write_text("def add(left, right):\n    return left + right\n", encoding="utf-8")
+    tests = tmp_path / "test_deep_subject.py"
+    tests.write_text(
+        "from deep_subject import add\n\ndef test_add():\n    assert add(2, 3) == 5\n",
+        encoding="utf-8",
+    )
+    report = deep_test(source, tests, tmp_path, max_mutants=1)
+    assert report.baseline.status == "passed"
+    assert report.mutants == 1
+    assert report.killed == 1
 
 
 def test_report_data_rejects_unknown_report() -> None:

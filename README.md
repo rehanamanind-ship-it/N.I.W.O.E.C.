@@ -17,7 +17,7 @@ niwoec is designed for local and air-gapped use:
 ### Install from a wheel
 
 ```bash
-python -m pip install dist/niwoec-2.2.0-py3-none-any.whl
+python -m pip install dist/niwoec-3.0.0-py3-none-any.whl
 ```
 
 ### Install from the source tree
@@ -42,6 +42,32 @@ Given a source directory and an FRS file:
 ```bash
 niwoec check requirements.frs src/ --tests tests/
 ```
+
+To opt into bounded local dynamic testing:
+
+```bash
+niwoec check requirements.frs src/ --tests tests/ --dynamic
+```
+
+Dynamic mode runs the local pytest suite in a subprocess, collects at most
+1,000 tests, and enforces a 30-second collection and execution timeout. It
+captures test failures but does not and cannot try every possible input. It
+does not contact the network on niwoec's behalf, but the executed project code
+may perform its own side effects. niwoec asks for two separate confirmations
+before execution. Use it only with trusted local code.
+
+For stronger bounded evidence about whether tests are meaningful, use mutation
+analysis:
+
+```bash
+niwoec check requirements.frs src/ --tests tests/ --deep
+```
+
+Deep mode first runs the baseline tests, then mutates up to 50 common arithmetic,
+comparison, and literal expressions in temporary copies of the project. A
+mutant is **killed** when tests fail, and **survived** when tests still pass.
+Surviving mutants identify behavior that the tests did not detect. This is
+evidence, not a proof of correctness or exhaustive input coverage.
 
 Inspect one layer at a time:
 
@@ -138,10 +164,19 @@ offline endpoint contract. It never probes an endpoint, downloads data, or
 changes the result based on internet availability.
 
 `check` reports mapping and test coverage independently. A requirement can be
-mapped but untested, which produces guidance such as:
+mapped but untested. This is **UNVERIFIED**, not a code failure: niwoec has not
+enough evidence to issue a final satisfied/failed verdict. It produces guidance
+such as:
 
 ```text
-Missing behavioral test reference: load_model; Suggested test name: test_load_model_...
+💡 Missing behavioral test reference: load_model; Suggested test name: test_load_model_...
+
+Human-readable output uses:
+
+- ✅ `SATISFIED` — mapped, tested, and no implementation findings.
+- 🟡 `UNVERIFIED` — missing source mapping or behavioral-test evidence; this is
+  not automatically a code error.
+- ❌ `FAILED` — implementation findings were detected.
 ```
 
 Use `--untested info`, `--untested warning`, or `--untested failure` to label
