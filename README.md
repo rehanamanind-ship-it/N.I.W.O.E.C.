@@ -20,6 +20,15 @@ niwoec is designed for local and air-gapped use:
 python -m pip install dist/niwoec-3.0.0-py3-none-any.whl
 ```
 
+The `dist/` directory retains the released wheel for each available version:
+
+- `niwoec-1.0.0-py3-none-any.whl`
+- `niwoec-2.1.0-py3-none-any.whl`
+- `niwoec-2.2.0-py3-none-any.whl`
+- `niwoec-3.0.0-py3-none-any.whl`
+
+Install a specific version by replacing the filename in the command above.
+
 ### Install from the source tree
 
 ```bash

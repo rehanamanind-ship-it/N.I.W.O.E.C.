@@ -6,10 +6,9 @@ python -m ruff check src tests
 python -m ruff format --check src tests
 python -m mypy --strict src
 python -m pytest --cov=niwoec --cov-fail-under=85
-rm -rf dist
 python -m build
 python -m venv /tmp/niwoec-verify
-/tmp/niwoec-verify/bin/pip install dist/niwoec-*.whl
+/tmp/niwoec-verify/bin/pip install dist/niwoec-3.0.0-py3-none-any.whl
 /tmp/niwoec-verify/bin/niwoec --version
 /tmp/niwoec-verify/bin/niwoec help >/dev/null
 echo "OK: all checks passed and wheel built"
