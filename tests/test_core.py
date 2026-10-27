@@ -10,6 +10,7 @@ from niwoec.core import (
     fuse,
     map_requirements,
     online,
+    upgrade_local,
     parse,
     report_data,
     review,
@@ -208,6 +209,25 @@ def test_render_supports_all_formats(tmp_path: Path) -> None:
     assert "stub-function" in render(report, "text")
     assert "stub-function" in render(report, "markdown")
     assert '"runs"' in render(report, "sarif")
+
+
+def test_upgrade_reads_local_wheel_metadata_without_network(tmp_path: Path) -> None:
+    import zipfile
+
+    wheel = tmp_path / "niwoec-9.9.9-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr(
+            "niwoec-9.9.9.dist-info/METADATA",
+            "Metadata-Version: 2.1\nName: niwoec\nVersion: 9.9.9\n",
+        )
+    assert upgrade_local(wheel).version == "9.9.9"
+
+
+def test_upgrade_rejects_non_distribution_artifact(tmp_path: Path) -> None:
+    artifact = tmp_path / "package.zip"
+    artifact.write_bytes(b"not a distribution")
+    with pytest.raises(InputError, match="requires a .whl or .tar.gz"):
+        upgrade_local(artifact)
 
 
 def test_render_verdict_markdown_includes_guidance(tmp_path: Path) -> None:

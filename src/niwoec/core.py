@@ -9,6 +9,8 @@ import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
+import zipfile
+import tarfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -137,6 +139,65 @@ class DeepReport:
     killed: int
     survived: int
     timed_out: int
+
+
+@dataclass(frozen=True)
+class UpgradeReport:
+    """Result of installing a validated local distribution artifact."""
+
+    artifact: str
+    version: str
+    status: str
+    output: str
+
+
+def _artifact_version(artifact: Path) -> str:
+    """Read the package version from a local wheel or source archive."""
+    if not artifact.is_file():
+        raise InputError(f"upgrade artifact not found: {artifact}")
+    try:
+        if artifact.suffix == ".whl":
+            with zipfile.ZipFile(artifact) as archive:
+                metadata_name = next(
+                    name for name in archive.namelist() if name.endswith("METADATA")
+                )
+                metadata = archive.read(metadata_name).decode()
+        elif artifact.name.endswith(".tar.gz"):
+            with tarfile.open(artifact, "r:gz") as archive:
+                pyproject_name = next(
+                    name for name in archive.getnames() if name.endswith("/pyproject.toml")
+                )
+                member = archive.extractfile(pyproject_name)
+                if member is None:
+                    raise InputError(f"missing pyproject metadata: {artifact}")
+                metadata = member.read().decode()
+        else:
+            raise InputError("upgrade requires a .whl or .tar.gz artifact")
+    except (OSError, StopIteration, UnicodeError, zipfile.BadZipFile, tarfile.TarError) as exc:
+        raise InputError(f"invalid upgrade artifact: {artifact}") from exc
+    match = re.search(r"^Version:\s*(\S+)$", metadata, re.MULTILINE) or re.search(
+        r'^version\s*=\s*["\']([^"\']+)["\']$', metadata, re.MULTILINE
+    )
+    if match is None:
+        raise InputError(f"version metadata not found: {artifact}")
+    return match.group(1)
+
+
+def upgrade_local(artifact: Path) -> UpgradeReport:
+    """Install a local artifact without contacting package indexes."""
+    version = _artifact_version(artifact)
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--no-index", "--upgrade", str(artifact)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return UpgradeReport(
+        str(artifact),
+        version,
+        "installed" if result.returncode == 0 else "failed",
+        (result.stdout + result.stderr).strip(),
+    )
 
 
 def dynamic_test(
@@ -618,6 +679,8 @@ def report_data(report: Any) -> dict[str, Any]:
                 "timed_out": report.timed_out,
             }
         }
+    if isinstance(report, UpgradeReport):
+        return {"upgrade": report.__dict__}
     raise TypeError(f"unsupported report {type(report).__name__}")
 
 

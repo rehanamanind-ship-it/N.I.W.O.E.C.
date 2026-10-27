@@ -13,6 +13,7 @@ from niwoec.core import (
     enforce_coverage,
     dynamic_test,
     deep_test,
+    upgrade_local,
     fuse,
     map_requirements,
     render,
@@ -84,11 +85,19 @@ def main(argv: list[str] | None = None) -> int:
     command.add_argument("--dynamic-project", type=Path, default=Path("."))
     command.add_argument("--format", choices=("text", "json", "sarif", "markdown"), default="text")
     sub.add_parser("help")
+    upgrade = sub.add_parser("upgrade")
+    upgrade.add_argument("artifact", type=Path)
+    upgrade.add_argument("--format", choices=("text", "json", "markdown"), default="text")
     try:
         args = parser.parse_args(argv)
         if args.command == "help":
             sys.stdout.write(parser.format_help())
             return 0
+        if args.command == "upgrade":
+            _confirm_dynamic_execution()
+            upgrade_report = upgrade_local(args.artifact)
+            sys.stdout.write(render(upgrade_report, args.format))
+            return 0 if upgrade_report.status == "installed" else 1
         report: Any
         if args.command in ("scan", "stubs"):
             report = scan(args.source)

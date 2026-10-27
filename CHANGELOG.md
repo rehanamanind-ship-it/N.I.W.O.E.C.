@@ -43,6 +43,8 @@ preserving deterministic, offline-first defaults.
 
 - Static commands remain offline, deterministic, and non-executing.
 - Dynamic execution is explicit and requires two confirmations.
+- Added a confirmation-protected offline `upgrade` command for local wheels and
+  source archives; it never contacts GitHub or package indexes.
 - Existing Click-style command-group false-positive handling is preserved.
 - The wheel remains pure Python and includes the example project.
 

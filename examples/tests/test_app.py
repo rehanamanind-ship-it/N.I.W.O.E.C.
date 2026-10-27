@@ -1,6 +1,6 @@
 """Example behavioral tests referenced by the FRS."""
 
-from app import add, save_message
+from examples.src.app import add, save_message
 
 
 def test_add() -> None:

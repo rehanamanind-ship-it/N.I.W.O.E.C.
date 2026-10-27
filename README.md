@@ -29,6 +29,20 @@ The `dist/` directory retains the released wheel for each available version:
 
 Install a specific version by replacing the filename in the command above.
 
+## Offline upgrades
+
+niwoec never contacts GitHub or package indexes at runtime. To upgrade from an
+artifact downloaded manually from the official repository, run:
+
+```bash
+niwoec upgrade dist/niwoec-3.0.0-py3-none-any.whl
+```
+
+The command accepts only a local `.whl` or `.tar.gz`, validates its embedded
+version metadata, asks for two confirmations, and invokes pip with
+`--no-index` so no network source can be contacted. Download the artifact from
+the repository's GitHub release page outside niwoec, then pass its local path.
+
 ### Install from the source tree
 
 ```bash
@@ -88,6 +102,42 @@ niwoec review src/
 niwoec online src/
 ```
 
+### User-friendly emoji output
+
+To see the human-readable output with emoji status indicators, use the
+`text` format. This is the default, so `--format text` is optional:
+
+```bash
+niwoec check requirements.frs src/ --tests tests/ --format text
+```
+
+You can also run the shorter equivalent:
+
+```bash
+niwoec check requirements.frs src/ --tests tests/
+```
+
+The output includes a summary and one line for each requirement, for example:
+
+```text
+📊 2 mapped | 2 tested | ✅ 2 satisfied | 🟡 0 unverified | ❌ 0 failed
+
+Requirement | Mapped | Tested | Status | Findings
+------------|--------|---------|--------|---------
+REQ-001     | Yes    | Yes     | ✅ SATISFIED | 0
+REQ-002     | Yes    | Yes     | ✅ SATISFIED | 0
+```
+
+The indicators mean:
+
+- ✅ `SATISFIED` — the requirement is mapped, tested, and has no findings.
+- 🟡 `UNVERIFIED` — test evidence or source mapping is missing; this is not
+  automatically a code failure.
+- ❌ `FAILED` — an implementation finding was detected.
+
+Use `--format json`, `--format markdown`, or `--format sarif` when you need
+machine-readable or CI-oriented output instead of the emoji text display.
+
 Use JSON when another tool needs to consume the result:
 
 ```bash
@@ -133,10 +183,11 @@ keeps similarly worded requirements from being linked to unrelated files.
 
 The distribution includes a ready-to-run example in [`examples/`](./examples/):
 
-- [`app.py`](./examples/app.py) contains two implemented functions.
-- [`stubs.py`](./examples/stubs.py) contains an intentional placeholder.
+- [`src/app.py`](./examples/src/app.py) contains two implemented functions.
+- [`src/stubs.py`](./examples/src/stubs.py) contains an intentional placeholder.
 - [`requirements.frs`](./examples/requirements.frs) contains the FRS.
-- [`test_app.py`](./examples/test_app.py) references tested requirements.
+- [`tests/test_app.py`](./examples/tests/test_app.py) references tested
+  requirements.
 - [`README.md`](./examples/README.md) gives the example-specific instructions.
 
 Run it from the repository root:
@@ -144,8 +195,8 @@ Run it from the repository root:
 ```bash
 niwoec scan examples
 niwoec map examples/requirements.frs examples
-niwoec verify examples/requirements.frs examples/test_app.py
-niwoec check examples/requirements.frs examples --tests examples/test_app.py
+niwoec verify examples/requirements.frs examples/tests
+niwoec check examples/requirements.frs examples --tests examples/tests
 ```
 
 The final command intentionally returns exit code `1`: `add` and
